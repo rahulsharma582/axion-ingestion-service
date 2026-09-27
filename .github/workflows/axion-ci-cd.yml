@@ -6,6 +6,7 @@ on:
       - main
   workflow_dispatch:
 
+# Required for GITHUB_TOKEN to push image to GHCR
 permissions:
   contents: read
   packages: write
@@ -88,7 +89,7 @@ jobs:
           echo "===== Dependency Check ====="
           pip check
 
-          echo "===== Installed FastAPI/Starlette ====="
+          echo "===== Installed FastAPI / Starlette ====="
           pip freeze | grep -Ei "fastapi|starlette"
 
       - name: Run SCA scan
@@ -100,7 +101,7 @@ jobs:
   # 3. PLAN
   # =========================================================
   plan:
-    name: Plan
+    name: Validate Kubernetes Manifests
     runs-on: ubuntu-latest
     needs: sca
 
@@ -115,17 +116,17 @@ jobs:
           test -f axion-backend-deployment.yaml
           test -f axion-backend-service.yaml
 
-          echo "Deployment manifest found:"
+          echo "===== Deployment Manifest ====="
           cat axion-backend-deployment.yaml
 
-          echo "Service manifest found:"
+          echo "===== Service Manifest ====="
           cat axion-backend-service.yaml
 
           echo "Kubernetes manifests validation completed."
 
 
   # =========================================================
-  # 4. BUILD + CONTAINER SECURITY SCAN + GHCR PUSH
+  # 4. BUILD + TRIVY SECURITY SCAN + GHCR PUSH
   # =========================================================
   build:
     name: Build, Scan & Push
@@ -142,8 +143,11 @@ jobs:
             -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
             .
 
+      # -------------------------------------------------------
+      # Container Security Scan
+      # -------------------------------------------------------
       - name: Trivy Container Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: table
@@ -151,16 +155,24 @@ jobs:
           exit-code: 1
           ignore-unfixed: true
 
+      # -------------------------------------------------------
+      # Login to GitHub Container Registry
+      # Uses built-in GITHUB_TOKEN
+      # No GHCR_USERNAME / GHCR_TOKEN secret required
+      # -------------------------------------------------------
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+      # -------------------------------------------------------
+      # Push Docker image
+      # -------------------------------------------------------
       - name: Push image to GHCR
         run: |
-          docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }
 
 
   # =========================================================
@@ -175,11 +187,17 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      # -------------------------------------------------------
+      # Azure Login
+      # -------------------------------------------------------
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # -------------------------------------------------------
+      # Get AKS credentials
+      # -------------------------------------------------------
       - name: Get AKS credentials
         run: |
           az aks get-credentials \
@@ -187,24 +205,36 @@ jobs:
             --name aks-preprod \
             --overwrite-existing
 
+      # -------------------------------------------------------
+      # Update backend image
+      # -------------------------------------------------------
       - name: Update backend image
         run: |
           kubectl -n preprodns set image \
             deployment/axion-backend \
             axion-backend=${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
+      # -------------------------------------------------------
+      # Wait for deployment rollout
+      # -------------------------------------------------------
       - name: Wait for rollout
         run: |
           kubectl -n preprodns rollout status \
             deployment/axion-backend \
             --timeout=180s
 
+      # -------------------------------------------------------
+      # Verify backend pods
+      # -------------------------------------------------------
       - name: Verify backend pods
         run: |
           kubectl get pods \
             -n preprodns \
             -l app=axion-backend
 
+      # -------------------------------------------------------
+      # Verify backend service
+      # -------------------------------------------------------
       - name: Verify backend service
         run: |
           kubectl get svc \
