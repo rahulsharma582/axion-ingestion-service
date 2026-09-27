@@ -49,3 +49,17 @@ jobs:
         run: |
           pip install pip-audit
           pip-audit -r requirements.txt
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    needs: sca
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show deployment manifests
+        run: |
+          echo "Validating Kubernetes manifests..."
+          cat axion-backend-deployment.yaml
+          cat axion-backend-service.yaml
